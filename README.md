@@ -16,9 +16,20 @@ omz plugin enable pipe-while-read
 
 Otherwise, simply source it/add it/copy-and-paste it into your `.zshrc`.
 
+## Rust CLI
+
+A Rust binary is included for standalone use:
+
+```zsh
+cargo build
+echo -e "foo\nbar" | cargo run -- -n echo "Got:"
+echo -e "one\ntwo" | cargo run -- printf "Line:%s\\n"
+```
+
+Run the tests with `cargo test`.
+
 ## Unlicense
 
 You wouldn't steal a software.
 
 See [The Unlicense](./UNLICENSE)
-
