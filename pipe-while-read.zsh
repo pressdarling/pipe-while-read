@@ -27,7 +27,7 @@ pipe-while-read () {
 	do
 		if [[ $dry_run == true ]]
 		then
-			echo "[DRY RUN] $cmd $@ $line"
+			echo "[DRY RUN] ${(q)cmd} ${(@q)@} ${(q)line}"
 		else
 			"$cmd" "$@" "$line"
 		fi
