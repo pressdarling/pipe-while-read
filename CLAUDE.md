@@ -9,7 +9,7 @@ This is a powerful zsh plugin providing the `pipe-while-read` function that proc
 ## Key Features
 
 - **Parallel execution** with configurable job count (`-j`)
-- **Rich placeholders**: `{}`, `{.}`, `{/}`, `{//}`, `{/.}`, `{#}`, `{%}`, `{1}..{n}`, `{-1}`, `{ext}`, `{len}`
+- **Rich placeholders**: `{}`, `{.}`, `{/}`, `{//}`, `{/.}`, `{#}`, `{%}`, `{1}`, `{2}`, ..., `{-1}`, `{ext}`, `{len}`
 - **Progress indicator** with ETA (`-P`)
 - **Timeout and retry** support (`-t`, `-r`)
 - **Keep output order** when parallel (`-k`)
@@ -61,12 +61,20 @@ echo -e "one\ntwo" | pipe-while-read --tag echo "result"
 
 Single-file plugin (`pipe-while-read.zsh`) containing:
 - Main `pipe-while-read()` function with comprehensive option parsing
+- `_pwr_trim()` helper for whitespace trimming
 - `_pwr_expand()` helper for placeholder substitution
+- `_pwr_timeout()` helper for cross-platform timeout (GNU coreutils or pure-zsh fallback)
 - `_pwr_run_cmd()` helper for timeout/retry execution
+- `_pwr_build_preview()` helper for dry-run command preview
 - `_pwr_show_progress()` helper for progress bar display
 - `pwr` alias for quick access
 
 Compatible with oh-my-zsh plugin system (place in `$ZSH_CUSTOM/plugins/`).
+
+## Notes
+
+- **Streaming mode**: Without `-P`/`--progress` or parallel jobs, input is processed line-by-line without buffering (memory efficient for large files)
+- **Timeout**: Uses GNU coreutils `timeout` if available, otherwise falls back to pure-zsh implementation (works on macOS without Homebrew)
 
 ## Comparison with Similar Tools
 

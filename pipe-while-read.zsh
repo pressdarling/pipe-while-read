@@ -6,12 +6,13 @@
 #   - Parallel execution with job control
 #   - Rich placeholder substitution ({}, {.}, {/}, {//}, {/.}, {#}, {n})
 #   - Progress indicator with ETA
-#   - Timeout and retry support
+#   - Timeout and retry support (pure zsh fallback for macOS)
 #   - Keep output order option
 #   - Field extraction with custom delimiters
 #   - Null-delimited input support
 #   - Verbose, quiet, and dry-run modes
 #   - Pass line to stdin instead of argument
+#   - Streaming mode for memory efficiency (when progress not needed)
 
 pipe-while-read() {
     # Default options
@@ -20,7 +21,7 @@ pipe-while-read() {
     local quiet=false
     local help=false
     local jobs=1
-    local timeout=0
+    local timeout_secs=0
     local retries=0
     local retry_delay=1
     local keep_order=false
@@ -63,11 +64,11 @@ pipe-while-read() {
             --jobs=*)
                 jobs=${1#--jobs=}; shift ;;
             -t|--timeout)
-                timeout=${2:-0}; shift 2 ;;
+                timeout_secs=${2:-0}; shift 2 ;;
             -t*)
-                timeout=${1#-t}; shift ;;
+                timeout_secs=${1#-t}; shift ;;
             --timeout=*)
-                timeout=${1#--timeout=}; shift ;;
+                timeout_secs=${1#--timeout=}; shift ;;
             -r|--retries)
                 retries=${2:-0}; shift 2 ;;
             -r*)
@@ -107,7 +108,7 @@ pipe-while-read() {
             --)
                 shift; break ;;
             -*)
-                printf "${c_red}Error: Unknown option: %s${c_reset}\n" "$1" >&2
+                printf '%s%s%s\n' "${c_red}Error: Unknown option: " "$1" "${c_reset}" >&2
                 return 1 ;;
             *)
                 break ;;
@@ -186,15 +187,22 @@ EXAMPLES:
 
     # Tag output with source
     cat servers.txt | pipe-while-read --tag ssh {} uptime
+
+NOTES:
+    - The timeout feature requires GNU coreutils 'timeout' command, or falls
+      back to a pure-zsh implementation using background jobs.
+    - Without -P/--progress, input is processed in streaming mode (memory
+      efficient for large inputs). With progress, all input is buffered.
 EOF
         return 0
     fi
 
     # Build command template
-    local cmd=("$@")
+    local -a cmd=("$@")
     local has_placeholder=false
 
     # Check if any argument contains a placeholder
+    local arg
     for arg in "${cmd[@]}"; do
         if [[ "$arg" == *'{}'* ]] || [[ "$arg" == *'{.'* ]] || \
            [[ "$arg" == *'{/'* ]] || [[ "$arg" == *'{#}'* ]] || \
@@ -206,7 +214,15 @@ EOF
         fi
     done
 
-    # Function to expand placeholders in a string
+    # Helper: trim whitespace from a string
+    _pwr_trim() {
+        local str="$1"
+        str="${str#"${str%%[![:space:]]*}"}"
+        str="${str%"${str##*[![:space:]]}"}"
+        printf '%s' "$str"
+    }
+
+    # Helper: expand placeholders in a string
     _pwr_expand() {
         local template="$1"
         local line="$2"
@@ -217,8 +233,7 @@ EOF
         # Trim if requested
         local processed_line="$line"
         if [[ $trim_input == true ]]; then
-            processed_line="${line#"${line%%[![:space:]]*}"}"
-            processed_line="${processed_line%"${processed_line##*[![:space:]]}"}"
+            processed_line="$(_pwr_trim "$line")"
         fi
 
         # Split into fields
@@ -230,34 +245,34 @@ EOF
         fi
 
         # Path components
-        local basename="${processed_line##*/}"
-        local dirname="${processed_line%/*}"
-        [[ "$dirname" == "$processed_line" ]] && dirname="."
+        local base="${processed_line##*/}"
+        local dir="${processed_line%/*}"
+        [[ "$dir" == "$processed_line" ]] && dir="."
         local noext="${processed_line%.*}"
-        local basename_noext="${basename%.*}"
-        local ext="${basename##*.}"
-        [[ "$ext" == "$basename" ]] && ext=""
+        local base_noext="${base%.*}"
+        local ext="${base##*.}"
+        [[ "$ext" == "$base" ]] && ext=""
 
         # Expand placeholders
         result="${result//\{#\}/$job_num}"
         result="${result//\{%\}/$job_slot}"
         result="${result//\{len\}/${#processed_line}}"
         result="${result//\{ext\}/$ext}"
-        result="${result//\{\/.\}/$basename_noext}"
-        result="${result//\{\/\/\}/$dirname}"
-        result="${result//\{\/\}/$basename}"
+        result="${result//\{\/.\}/$base_noext}"
+        result="${result//\{\/\/\}/$dir}"
+        result="${result//\{\/\}/$base}"
         result="${result//\{.\}/$noext}"
 
         # Field extraction {1}, {2}, {-1}, {-2}, etc.
-        local i
+        local i field_val neg_idx
         for i in {1..20}; do
             if [[ "$result" == *"{$i}"* ]]; then
-                local field_val="${fields[$i]:-}"
+                field_val="${fields[$i]:-}"
                 result="${result//\{$i\}/$field_val}"
             fi
             if [[ "$result" == *"{-$i}"* ]]; then
-                local neg_idx=$((${#fields[@]} - i + 1))
-                local field_val="${fields[$neg_idx]:-}"
+                neg_idx=$((${#fields[@]} - i + 1))
+                field_val="${fields[$neg_idx]:-}"
                 result="${result//\{-$i\}/$field_val}"
             fi
         done
@@ -268,16 +283,55 @@ EOF
         printf '%s' "$result"
     }
 
-    # Function to run a single command with timeout and retries
+    # Helper: run command with timeout (pure zsh fallback for macOS)
+    _pwr_timeout() {
+        local secs="$1"
+        shift
+        local -a cmd_to_run=("$@")
+
+        # Try GNU timeout first (Linux, Homebrew on macOS)
+        if command -v timeout &>/dev/null; then
+            timeout "$secs" "${cmd_to_run[@]}"
+            return $?
+        fi
+
+        # Pure zsh fallback using background job
+        local pid
+        "${cmd_to_run[@]}" &
+        pid=$!
+
+        # Wait with timeout
+        local elapsed=0
+        while (( elapsed < secs )); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                wait "$pid" 2>/dev/null
+                return $?
+            fi
+            sleep 0.1
+            elapsed=$((elapsed + 1))
+            # Check 10 times per second
+            (( elapsed % 10 == 0 )) || elapsed=$((elapsed - 1))
+        done
+
+        # Timeout reached, kill the process
+        kill -TERM "$pid" 2>/dev/null
+        sleep 0.1
+        kill -KILL "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        return 124  # Standard timeout exit code
+    }
+
+    # Helper: run a single command with timeout and retries
     _pwr_run_cmd() {
-        local -a expanded_cmd=()
         local line="$1"
         local job_num="$2"
         local job_slot="$3"
         shift 3
         local -a cmd_template=("$@")
+        local -a expanded_cmd=()
 
         # Expand placeholders in each argument
+        local arg
         for arg in "${cmd_template[@]}"; do
             expanded_cmd+=("$(_pwr_expand "$arg" "$line" "$job_num" "$job_slot")")
         done
@@ -286,44 +340,43 @@ EOF
         if [[ $has_placeholder == false ]] && [[ $pass_stdin == false ]]; then
             local processed_line="$line"
             if [[ $trim_input == true ]]; then
-                processed_line="${line#"${line%%[![:space:]]*}"}"
-                processed_line="${processed_line%"${processed_line##*[![:space:]]}"}"
+                processed_line="$(_pwr_trim "$line")"
             fi
             expanded_cmd+=("$processed_line")
         fi
 
         local attempt=0
         local max_attempts=$((retries + 1))
-        local exit_code=1
+        local cmd_exit_code=1
 
         while (( attempt < max_attempts )); do
             (( attempt++ ))
 
             if [[ $verbose == true ]] && (( attempt > 1 )); then
-                printf "${c_yellow}[RETRY %d/%d]${c_reset} %s\n" "$attempt" "$max_attempts" "${expanded_cmd[*]}" >&2
+                printf '%s[RETRY %d/%d]%s %s\n' "${c_yellow}" "$attempt" "$max_attempts" "${c_reset}" "${expanded_cmd[*]}" >&2
             fi
 
             if [[ $pass_stdin == true ]]; then
                 # Pass line to stdin
-                if (( timeout > 0 )); then
-                    printf '%s\n' "$line" | timeout "$timeout" "${expanded_cmd[@]}"
+                if (( timeout_secs > 0 )); then
+                    printf '%s\n' "$line" | _pwr_timeout "$timeout_secs" "${expanded_cmd[@]}"
                 else
                     printf '%s\n' "$line" | "${expanded_cmd[@]}"
                 fi
             else
-                if (( timeout > 0 )); then
-                    timeout "$timeout" "${expanded_cmd[@]}"
+                if (( timeout_secs > 0 )); then
+                    _pwr_timeout "$timeout_secs" "${expanded_cmd[@]}"
                 else
                     "${expanded_cmd[@]}"
                 fi
             fi
-            exit_code=$?
+            cmd_exit_code=$?
 
-            if (( exit_code == 0 )); then
+            if (( cmd_exit_code == 0 )); then
                 break
-            elif (( exit_code == 124 )); then
+            elif (( cmd_exit_code == 124 )); then
                 # Timeout occurred
-                [[ $verbose == true ]] && printf "${c_red}[TIMEOUT]${c_reset} %s\n" "${expanded_cmd[*]}" >&2
+                [[ $verbose == true ]] && printf '%s[TIMEOUT]%s %s\n' "${c_red}" "${c_reset}" "${expanded_cmd[*]}" >&2
             fi
 
             if (( attempt < max_attempts )); then
@@ -331,45 +384,55 @@ EOF
             fi
         done
 
-        return $exit_code
+        return $cmd_exit_code
     }
 
-    # Read all input into array for progress tracking
-    local -a lines=()
-    local read_delim=""
-    [[ $null_delim == true ]] && read_delim="-d ''"
+    # Helper: build preview command for dry-run
+    _pwr_build_preview() {
+        local line="$1"
+        local job_num="$2"
+        local job_slot="$3"
+        local -a preview_cmd=()
+        local arg
+        for arg in "${cmd[@]}"; do
+            preview_cmd+=("$(_pwr_expand "$arg" "$line" "$job_num" "$job_slot")")
+        done
+        if [[ $has_placeholder == false ]] && [[ $pass_stdin == false ]]; then
+            local processed_line="$line"
+            if [[ $trim_input == true ]]; then
+                processed_line="$(_pwr_trim "$line")"
+            fi
+            preview_cmd+=("$processed_line")
+        fi
+        printf '%s' "${preview_cmd[*]}"
+    }
 
-    if [[ $null_delim == true ]]; then
-        while IFS= read -r -d '' line; do
-            lines+=("$line")
-        done
-    else
-        while IFS= read -r line; do
-            lines+=("$line")
-        done
+    # Determine if we need to buffer all input (for progress bar or {#} placeholder)
+    local needs_buffering=false
+    if [[ $progress == true ]] || (( jobs > 1 )); then
+        needs_buffering=true
     fi
 
-    local total=${#lines[@]}
+    # Check if {#} is used - we need total count for that
+    for arg in "${cmd[@]}"; do
+        if [[ "$arg" == *'{#}'* ]]; then
+            needs_buffering=true
+            break
+        fi
+    done
 
-    if (( total == 0 )); then
-        [[ $verbose == true ]] && printf "${c_dim}No input lines to process${c_reset}\n" >&2
-        return 0
-    fi
-
-    [[ $verbose == true ]] && printf "${c_dim}Processing %d lines with %d job(s)${c_reset}\n" "$total" "$jobs" >&2
-
-    # Progress tracking
+    # Progress tracking variables
     local processed=0
     local failed=0
+    local total=0
     local start_time=$SECONDS
 
+    # Helper: show progress bar
     _pwr_show_progress() {
-        if [[ $progress == true ]] && [[ -t 2 ]]; then
+        if [[ $progress == true ]] && [[ -t 2 ]] && (( total > 0 )); then
             local elapsed=$((SECONDS - start_time))
-            local rate=0
             local eta="--:--"
             if (( processed > 0 )) && (( elapsed > 0 )); then
-                rate=$((processed * 100 / elapsed))
                 local remaining=$(( (total - processed) * elapsed / processed ))
                 eta=$(printf '%02d:%02d' $((remaining / 60)) $((remaining % 60)))
             fi
@@ -377,6 +440,7 @@ EOF
             local bar_width=20
             local filled=$((pct * bar_width / 100))
             local bar=""
+            local i
             for ((i=0; i<bar_width; i++)); do
                 if ((i < filled)); then
                     bar+="█"
@@ -384,61 +448,127 @@ EOF
                     bar+="░"
                 fi
             done
-            printf "\r${c_cyan}[%s]${c_reset} %3d%% (%d/%d) ETA: %s  " \
-                "$bar" "$pct" "$processed" "$total" "$eta" >&2
+            printf '\r%s[%s]%s %3d%% (%d/%d) ETA: %s  ' \
+                "${c_cyan}" "$bar" "${c_reset}" "$pct" "$processed" "$total" "$eta" >&2
         fi
     }
 
+    # Build read options array
+    local -a read_opts=(-r)
+    [[ $null_delim == true ]] && read_opts+=(-d '')
+
+    # STREAMING MODE: Process line-by-line without buffering
+    if [[ $needs_buffering == false ]]; then
+        local line
+        local job_num=0
+        local cmd_exit_code=0
+
+        while IFS= read "${read_opts[@]}" line; do
+            (( job_num++ ))
+            (( delay > 0 )) && (( job_num > 1 )) && sleep "$delay"
+
+            if [[ $dry_run == true ]]; then
+                printf '%s[DRY RUN]%s %s\n' "${c_yellow}" "${c_reset}" "$(_pwr_build_preview "$line" "$job_num" "1")"
+            else
+                [[ $verbose == true ]] && printf '%s[%d]%s ' "${c_dim}" "$job_num" "${c_reset}" >&2
+
+                if [[ $quiet == true ]]; then
+                    _pwr_run_cmd "$line" "$job_num" "1" "${cmd[@]}" >/dev/null 2>&1
+                    cmd_exit_code=$?
+                elif [[ $tag_output == true ]]; then
+                    local cmd_output
+                    cmd_output=$(_pwr_run_cmd "$line" "$job_num" "1" "${cmd[@]}" 2>&1)
+                    cmd_exit_code=$?
+                    if [[ -n "$cmd_output" ]]; then
+                        local out_line
+                        while IFS= read -r out_line; do
+                            printf '%s%s:%s %s\n' "${c_dim}" "$line" "${c_reset}" "$out_line"
+                        done <<< "$cmd_output"
+                    fi
+                else
+                    _pwr_run_cmd "$line" "$job_num" "1" "${cmd[@]}"
+                    cmd_exit_code=$?
+                fi
+
+                (( processed++ ))
+                if (( cmd_exit_code != 0 )); then
+                    (( failed++ ))
+                    [[ $verbose == true ]] && printf '%s[FAILED]%s exit code %d\n' "${c_red}" "${c_reset}" "$cmd_exit_code" >&2
+                    if [[ $fail_fast == true ]]; then
+                        printf '%sStopping due to --fail-fast%s\n' "${c_red}" "${c_reset}" >&2
+                        return 1
+                    fi
+                fi
+            fi
+        done
+
+        if (( processed == 0 )) && [[ $dry_run == false ]]; then
+            [[ $verbose == true ]] && printf '%sNo input lines to process%s\n' "${c_dim}" "${c_reset}" >&2
+        fi
+
+        [[ $verbose == true ]] && (( processed > 0 )) && printf '%sCompleted: %d succeeded, %d failed%s\n' \
+            "${c_dim}" "$((processed - failed))" "$failed" "${c_reset}" >&2
+
+        (( failed > 0 )) && return 1
+        return 0
+    fi
+
+    # BUFFERED MODE: Read all input for progress tracking or parallel execution
+    local -a lines=()
+    local line
+
+    while IFS= read "${read_opts[@]}" line; do
+        lines+=("$line")
+    done
+
+    total=${#lines[@]}
+
+    if (( total == 0 )); then
+        [[ $verbose == true ]] && printf '%sNo input lines to process%s\n' "${c_dim}" "${c_reset}" >&2
+        return 0
+    fi
+
+    [[ $verbose == true ]] && printf '%sProcessing %d lines with %d job(s)%s\n' "${c_dim}" "$total" "$jobs" "${c_reset}" >&2
+
     # Execute commands
     if (( jobs == 1 )); then
-        # Sequential execution
+        # Sequential execution (buffered for progress)
         local job_num=0
+        local cmd_exit_code=0
         for line in "${lines[@]}"; do
             (( job_num++ ))
 
             (( delay > 0 )) && (( job_num > 1 )) && sleep "$delay"
 
             if [[ $dry_run == true ]]; then
-                local -a preview_cmd=()
-                for arg in "${cmd[@]}"; do
-                    preview_cmd+=("$(_pwr_expand "$arg" "$line" "$job_num" "1")")
-                done
-                if [[ $has_placeholder == false ]] && [[ $pass_stdin == false ]]; then
-                    local processed_line="$line"
-                    if [[ $trim_input == true ]]; then
-                        processed_line="${line#"${line%%[![:space:]]*}"}"
-                        processed_line="${processed_line%"${processed_line##*[![:space:]]}"}"
-                    fi
-                    preview_cmd+=("$processed_line")
-                fi
-                printf "${c_yellow}[DRY RUN]${c_reset} %s\n" "${preview_cmd[*]}"
+                printf '%s[DRY RUN]%s %s\n' "${c_yellow}" "${c_reset}" "$(_pwr_build_preview "$line" "$job_num" "1")"
             else
-                [[ $verbose == true ]] && printf "${c_dim}[%d/%d]${c_reset} " "$job_num" "$total" >&2
+                [[ $verbose == true ]] && printf '%s[%d/%d]%s ' "${c_dim}" "$job_num" "$total" "${c_reset}" >&2
 
-                local output
-                local exit_code
                 if [[ $quiet == true ]]; then
                     _pwr_run_cmd "$line" "$job_num" "1" "${cmd[@]}" >/dev/null 2>&1
-                    exit_code=$?
+                    cmd_exit_code=$?
                 elif [[ $tag_output == true ]]; then
-                    output=$(_pwr_run_cmd "$line" "$job_num" "1" "${cmd[@]}" 2>&1)
-                    exit_code=$?
-                    if [[ -n "$output" ]]; then
+                    local cmd_output
+                    cmd_output=$(_pwr_run_cmd "$line" "$job_num" "1" "${cmd[@]}" 2>&1)
+                    cmd_exit_code=$?
+                    if [[ -n "$cmd_output" ]]; then
+                        local out_line
                         while IFS= read -r out_line; do
-                            printf "${c_dim}%s:${c_reset} %s\n" "$line" "$out_line"
-                        done <<< "$output"
+                            printf '%s%s:%s %s\n' "${c_dim}" "$line" "${c_reset}" "$out_line"
+                        done <<< "$cmd_output"
                     fi
                 else
                     _pwr_run_cmd "$line" "$job_num" "1" "${cmd[@]}"
-                    exit_code=$?
+                    cmd_exit_code=$?
                 fi
 
                 (( processed++ ))
-                if (( exit_code != 0 )); then
+                if (( cmd_exit_code != 0 )); then
                     (( failed++ ))
-                    [[ $verbose == true ]] && printf "${c_red}[FAILED]${c_reset} exit code %d\n" "$exit_code" >&2
+                    [[ $verbose == true ]] && printf '%s[FAILED]%s exit code %d\n' "${c_red}" "${c_reset}" "$cmd_exit_code" >&2
                     if [[ $fail_fast == true ]]; then
-                        printf "${c_red}Stopping due to --fail-fast${c_reset}\n" >&2
+                        printf '%sStopping due to --fail-fast%s\n' "${c_red}" "${c_reset}" >&2
                         return 1
                     fi
                 fi
@@ -449,7 +579,6 @@ EOF
     else
         # Parallel execution
         local -a pids=()
-        local -a job_lines=()
         local -a tmpfiles=()
         local job_num=0
         local job_slot=0
@@ -469,47 +598,59 @@ EOF
             (( delay > 0 )) && (( job_num > 1 )) && sleep "$delay"
 
             if [[ $dry_run == true ]]; then
-                local -a preview_cmd=()
-                for arg in "${cmd[@]}"; do
-                    preview_cmd+=("$(_pwr_expand "$arg" "$line" "$job_num" "$job_slot")")
-                done
-                if [[ $has_placeholder == false ]] && [[ $pass_stdin == false ]]; then
-                    local processed_line="$line"
-                    if [[ $trim_input == true ]]; then
-                        processed_line="${line#"${line%%[![:space:]]*}"}"
-                        processed_line="${processed_line%"${processed_line##*[![:space:]]}"}"
-                    fi
-                    preview_cmd+=("$processed_line")
-                fi
-                printf "${c_yellow}[DRY RUN %d]${c_reset} %s\n" "$job_num" "${preview_cmd[*]}"
+                printf '%s[DRY RUN %d]%s %s\n' "${c_yellow}" "$job_num" "${c_reset}" "$(_pwr_build_preview "$line" "$job_num" "$job_slot")"
                 continue
             fi
 
             # Wait for a slot if we're at max jobs
             while (( running >= jobs )); do
-                for i in "${!pids[@]}"; do
-                    if ! kill -0 "${pids[$i]}" 2>/dev/null; then
-                        wait "${pids[$i]}" 2>/dev/null
-                        local exit_code=$?
+                # Try to use 'wait -n' for efficiency (zsh 5.8+)
+                if [[ ${ZSH_VERSION:-} ]] && is-at-least 5.8 2>/dev/null; then
+                    wait -n 2>/dev/null
+                    local wait_exit=$?
+                    if (( wait_exit >= 0 )); then
                         (( processed++ ))
-                        if (( exit_code != 0 )); then
+                        if (( wait_exit != 0 )); then
                             (( failed++ ))
                             if [[ $fail_fast == true ]]; then
-                                # Kill remaining jobs
                                 for pid in "${pids[@]}"; do
                                     kill "$pid" 2>/dev/null
                                 done
-                                printf "${c_red}Stopping due to --fail-fast${c_reset}\n" >&2
+                                printf '%sStopping due to --fail-fast%s\n' "${c_red}" "${c_reset}" >&2
                                 [[ -n "$tmpdir" ]] && rm -rf "$tmpdir"
                                 return 1
                             fi
                         fi
-                        unset 'pids[i]'
                         (( running-- ))
                         _pwr_show_progress
                     fi
-                done
-                (( running >= jobs )) && sleep 0.05
+                else
+                    # Fallback: poll for finished jobs
+                    local i job_exit
+                    for i in "${!pids[@]}"; do
+                        if ! kill -0 "${pids[$i]}" 2>/dev/null; then
+                            wait "${pids[$i]}" 2>/dev/null
+                            job_exit=$?
+                            (( processed++ ))
+                            if (( job_exit != 0 )); then
+                                (( failed++ ))
+                                if [[ $fail_fast == true ]]; then
+                                    local pid
+                                    for pid in "${pids[@]}"; do
+                                        kill "$pid" 2>/dev/null
+                                    done
+                                    printf '%sStopping due to --fail-fast%s\n' "${c_red}" "${c_reset}" >&2
+                                    [[ -n "$tmpdir" ]] && rm -rf "$tmpdir"
+                                    return 1
+                                fi
+                            fi
+                            unset 'pids[i]'
+                            (( running-- ))
+                            _pwr_show_progress
+                        fi
+                    done
+                    (( running >= jobs )) && sleep 0.05
+                fi
             done
 
             # Start new job
@@ -519,12 +660,13 @@ EOF
                     if [[ $quiet == true ]]; then
                         _pwr_run_cmd "$line" "$job_num" "$job_slot" "${cmd[@]}" >/dev/null 2>&1
                     elif [[ $tag_output == true ]]; then
-                        local output
-                        output=$(_pwr_run_cmd "$line" "$job_num" "$job_slot" "${cmd[@]}" 2>&1)
-                        if [[ -n "$output" ]]; then
+                        local cmd_output
+                        cmd_output=$(_pwr_run_cmd "$line" "$job_num" "$job_slot" "${cmd[@]}" 2>&1)
+                        if [[ -n "$cmd_output" ]]; then
+                            local out_line
                             while IFS= read -r out_line; do
-                                printf "%s: %s\n" "$line" "$out_line"
-                            done <<< "$output"
+                                printf '%s: %s\n' "$line" "$out_line"
+                            done <<< "$cmd_output"
                         fi
                     else
                         _pwr_run_cmd "$line" "$job_num" "$job_slot" "${cmd[@]}"
@@ -536,12 +678,13 @@ EOF
                     if [[ $quiet == true ]]; then
                         _pwr_run_cmd "$line" "$job_num" "$job_slot" "${cmd[@]}" >/dev/null 2>&1
                     elif [[ $tag_output == true ]]; then
-                        local output
-                        output=$(_pwr_run_cmd "$line" "$job_num" "$job_slot" "${cmd[@]}" 2>&1)
-                        if [[ -n "$output" ]]; then
+                        local cmd_output
+                        cmd_output=$(_pwr_run_cmd "$line" "$job_num" "$job_slot" "${cmd[@]}" 2>&1)
+                        if [[ -n "$cmd_output" ]]; then
+                            local out_line
                             while IFS= read -r out_line; do
-                                printf "%s: %s\n" "$line" "$out_line"
-                            done <<< "$output"
+                                printf '%s: %s\n' "$line" "$out_line"
+                            done <<< "$cmd_output"
                         fi
                     else
                         _pwr_run_cmd "$line" "$job_num" "$job_slot" "${cmd[@]}"
@@ -550,16 +693,16 @@ EOF
             fi
 
             pids+=($!)
-            job_lines+=("$line")
             (( running++ ))
         done
 
         # Wait for remaining jobs
+        local i job_exit
         for i in "${!pids[@]}"; do
             wait "${pids[$i]}" 2>/dev/null
-            local exit_code=$?
+            job_exit=$?
             (( processed++ ))
-            if (( exit_code != 0 )); then
+            if (( job_exit != 0 )); then
                 (( failed++ ))
             fi
             _pwr_show_progress
@@ -567,6 +710,7 @@ EOF
 
         # Output in order if requested
         if [[ $keep_order == true ]] && [[ $dry_run == false ]]; then
+            local tmpfile
             for tmpfile in "${tmpfiles[@]}"; do
                 [[ -f "$tmpfile" ]] && cat "$tmpfile"
             done
@@ -578,16 +722,16 @@ EOF
     # Final progress line
     if [[ $progress == true ]] && [[ -t 2 ]] && [[ $dry_run == false ]]; then
         local elapsed=$((SECONDS - start_time))
-        printf "\r${c_green}[████████████████████]${c_reset} 100%% (%d/%d) Done in %ds" \
-            "$total" "$total" "$elapsed" >&2
+        printf '\r%s[████████████████████]%s 100%% (%d/%d) Done in %ds' \
+            "${c_green}" "${c_reset}" "$total" "$total" "$elapsed" >&2
         if (( failed > 0 )); then
-            printf " ${c_red}(%d failed)${c_reset}" "$failed" >&2
+            printf ' %s(%d failed)%s' "${c_red}" "$failed" "${c_reset}" >&2
         fi
-        printf "\n" >&2
+        printf '\n' >&2
     fi
 
-    [[ $verbose == true ]] && printf "${c_dim}Completed: %d succeeded, %d failed${c_reset}\n" \
-        "$((total - failed))" "$failed" >&2
+    [[ $verbose == true ]] && printf '%sCompleted: %d succeeded, %d failed%s\n' \
+        "${c_dim}" "$((total - failed))" "$failed" "${c_reset}" >&2
 
     # Return failure if any job failed
     (( failed > 0 )) && return 1
