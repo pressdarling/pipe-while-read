@@ -18,6 +18,9 @@ echo -e "foo\nbar\nbaz" | pipe-while-read -n echo "Got:"
 
 # Test execution
 echo -e "one\ntwo" | pipe-while-read echo "Line:"
+
+# Test with delimiter
+echo "a,b,c" | pipe-while-read -d "," echo "Part:"
 ```
 
 ## Architecture
