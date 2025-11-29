@@ -1,33 +1,38 @@
 # Repository Guidelines
 
 ## Project Structure & Key Files
-- `pipe-while-read.zsh`: Single-function plugin; parses flags, reads stdin line-by-line, executes a command per line.
-- `README.md`: Install and usage quickstart for oh-my-zsh or manual sourcing.
-- `CLAUDE.md`: Short project brief and manual test examples; keep this file in sync when behavior changes.
-- `UNLICENSE`: Public domain dedication; no contributor license agreement required.
+- `pipe-while-read.zsh`: Original zsh function; reads stdin line-by-line and appends each line to a command.
+- `src/main.rs`: Rust CLI port with the same behavior and `-n/--dry-run` support via clap.
+- `tests/cli.rs`: Integration tests covering dry-run output and execution.
+- `Cargo.toml`: Rust dependencies (`clap`, `anyhow`) plus dev tools (`assert_cmd`, `predicates`).
+- `README.md`: Usage for both the zsh plugin and the Rust binary.
+- `CLAUDE.md`: Quick manual test recipes; keep updated when behavior changes.
+- `UNLICENSE`: Public domain dedication.
 
 ## Build, Test, and Development
-- No build step; plugin is sourced directly. Reload with `source pipe-while-read.zsh` after edits.
-- Manual sanity checks (from `CLAUDE.md`):
+- Zsh plugin: no build step; reload with `source pipe-while-read.zsh` after edits.
+- Rust CLI: `cargo build` (or `cargo run -- <args>`) to compile and try changes; run `cargo fmt` before committing.
+- Tests: `cargo test` exercises dry-run and execution paths. Manual checks remain helpful:
   - Dry run: `echo -e "foo\nbar\nbaz" | pipe-while-read -n echo "Got:"`
-  - Execution: `echo -e "one\ntwo" | pipe-while-read echo "Line:"`
-- For local iterations, prefer piping small fixtures; avoid commands that mutate state when not using `-n`.
+  - Execute: `echo -e "one\ntwo" | pipe-while-read echo "Line:"`
+- Prefer small fixture input when iterating; avoid side-effecting commands unless using `-n`.
 
 ## Coding Style & Naming
-- Shell: zsh; keep function name `pipe-while-read` and flag forms `-n/--dry-run`, `-h/--help`.
-- Indentation: match existing style (tabs in current file); keep lines under ~100 chars and quote variables that can contain spaces.
-- Error handling: print concise usage/help to stdout; return success (0) on help, propagate failures from invoked commands where practical.
-- New options should preserve backward compatibility and update usage text plus examples.
+- Shell: keep function name `pipe-while-read`; flags remain `-n/--dry-run`, `-h/--help`. Maintain tab indentation and quote expansions that may contain spaces.
+- Rust: edition 2024; `anyhow::Result` for `main`; `clap` for argument parsing. Keep help/dry-run output aligned with the zsh version. Propagate the invoked command’s exit code when possible.
+- Formatting: run `cargo fmt`; keep lines ~100 chars. When adding options, update both implementations and docs/examples.
 
 ## Testing Guidelines
-- There is no automated test suite; rely on manual piping examples above.
-- When adding behavior, include at least one new manual check command in PR description and, if relevant, a dry-run variant to prevent accidental writes.
+- Automated: `cargo test` (integration tests in `tests/cli.rs`). Add cases when output format or flags change.
+- Manual: ensure the sample pipelines in `CLAUDE.md` stay accurate; include a dry-run example for any new behavior.
 
 ## Commit & Pull Request Expectations
-- Commits: short, imperative subjects (e.g., "Add dry-run flag note", "Improve usage text"). Avoid bundling unrelated changes.
-- PRs: include what changed, why, and before/after behavior. Attach sample command outputs for new behaviors. If flags or usage change, note doc updates and backward-compatibility considerations.
-- Keep diffs minimal; this repo is intentionally small—prefer clarity over abstraction.
+- Commits: short, imperative subjects; avoid mixing unrelated changes.
+- PRs: explain what and why; include sample command outputs (dry-run + real) for behavior changes. Note doc updates and any backward-compat considerations.
+- Keep diffs minimal; the repo is intentionally small—favor clarity over abstraction.
+- When working from a worktree, run git commands with `git -C /Users/brady/tmp/trees/pipe-while-read/rust-cli-mvp` to avoid affecting other checkouts.
 
 ## Compatibility & Distribution Notes
 - Target zsh users; avoid bashisms unless guarded. Test on macOS default zsh; avoid external dependencies.
-- For oh-my-zsh distribution, ensure the file remains standalone and does not rely on repo layout beyond `pipe-while-read.zsh`.
+- Rust binary should not assume GNU-only tools; tests rely on `echo`/`printf` which are widely available.
+- For oh-my-zsh distribution, keep `pipe-while-read.zsh` standalone and not coupled to repo layout.
