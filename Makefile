@@ -8,7 +8,7 @@ PLUGIN_DIR = $(ZSH_CUSTOM)/plugins/$(PLUGIN_NAME)
 PLUGIN_FILE = $(PLUGIN_DIR)/$(PLUGIN_NAME).plugin.zsh
 SYMLINK_TARGET = $(CURDIR)/pipe-while-read.zsh
 
-.PHONY: install uninstall test
+.PHONY: install uninstall help
 
 install:
 	@echo "Installing pipe-while-read plugin..."
@@ -23,16 +23,9 @@ uninstall:
 	@rmdir $(PLUGIN_DIR) 2>/dev/null || true
 	@echo "Plugin uninstalled."
 
-test:
-	@echo "Running tests..."
-	@zsh -c 'source ./pipe-while-read.zsh && echo -e "foo\nbar\nbaz" | pipe-while-read -n echo "Got:"'
-	@zsh -c 'source ./pipe-while-read.zsh && echo -e "one\ntwo" | pipe-while-read echo "Line:"'
-	@echo "Tests complete."
-
 help:
 	@echo "Usage: make [target]"
 	@echo "Targets:"
 	@echo "  install    Install the plugin for oh-my-zsh"
 	@echo "  uninstall  Uninstall the plugin"
-	@echo "  test       Run tests"
 	@echo "  help       Show this help message"
