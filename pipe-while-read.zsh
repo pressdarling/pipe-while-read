@@ -11,18 +11,18 @@ _pipe-while-read_usage() {
 
 # Reads from stdin line by line and executes a command for each line.
 pipe-while-read() {
-	local dry_run=false
-	local help=false
+	local dry_run=0
+	local help=0
 
 	# Parse options
 	while [[ $# -gt 0 ]]; do
 		case $1 in
 			(-n | --dry-run)
-				dry_run=true
+				dry_run=1
 				shift
 				;;
 			(-h | --help)
-				help=true
+				help=1
 				shift
 				;;
 			(*) break ;;
@@ -30,7 +30,7 @@ pipe-while-read() {
 	done
 
 	# Show help and exit if requested or if no command is provided.
-	if [[ "$help" == "true" ]] || [[ $# -lt 1 ]]; then
+	if (( help )) || [[ $# -lt 1 ]]; then
 		_pipe-while-read_usage
 		return 0
 	fi
@@ -40,8 +40,8 @@ pipe-while-read() {
 
 	# Process stdin line by line.
 	while IFS= read -r line; do
-		if [[ "$dry_run" == "true" ]]; then
-			echo "[DRY RUN] $cmd" "$@" "$line"
+		if (( dry_run )); then
+			printf '%s\n' "[DRY RUN] $cmd $@ $line"
 		else
 			"$cmd" "$@" "$line"
 		fi
