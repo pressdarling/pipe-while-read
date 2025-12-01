@@ -14,11 +14,25 @@ pipe-while-read () {
 	done
 	if [[ $help == true ]] || [[ $# -lt 1 ]]
 	then
-		printf 'Usage: command | pipe-while-read [-n|--dry-run] [-h|--help] <command> [args...]\n'
-		printf '  Reads stdin line by line and executes <command> with each line as argument\n'
-		printf '  -n, --dry-run  Show commands without executing\n'
-		printf '  -h, --help     Show this help\n'
-		printf 'Example: cat file.txt | pipe-while-read -n echo "Processing:"\n'
+		cat <<-EOF
+		Usage: <command> | pipe-while-read [-n|--dry-run] [-h|--help] <command> [args...]
+
+		Reads stdin line by line and executes <command> for each line, appending the line as the final argument.
+
+		Options:
+		  -n, --dry-run  Show the commands that would be executed without running them.
+		  -h, --help     Show this help message.
+
+		Examples:
+		  # Basic execution: list files and print their names
+		  ls | pipe-while-read echo "Found file:"
+
+		  # Dry run: preview commands to create files without actually creating them
+		  printf "file1.txt\nfile2.txt\n" | pipe-while-read -n touch
+
+		  # Chaining commands: find all .log files and gzip them
+		  find . -name "*.log" | pipe-while-read gzip
+		EOF
 		return 0
 	fi
 	local cmd=$1 
