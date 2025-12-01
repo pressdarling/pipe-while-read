@@ -1,33 +1,49 @@
 #!/usr/bin/env zsh
-pipe-while-read () {
-	local dry_run=false 
-	local help=false 
-	while [[ $# -gt 0 ]]
-	do
+
+# Shows usage instructions.
+_pipe-while-read_usage() {
+	printf 'Usage: command | pipe-while-read [-n|--dry-run] [-h|--help] <command> [args...]\n'
+	printf '  Reads stdin line by line and executes <command> with each line as argument\n'
+	printf '  -n, --dry-run  Show commands without executing\n'
+	printf '  -h, --help     Show this help\n'
+	printf 'Example: cat file.txt | pipe-while-read -n echo "Processing:"\n'
+}
+
+# Reads from stdin line by line and executes a command for each line.
+pipe-while-read() {
+	local dry_run=0
+	local help=0
+
+	# Parse options
+	while [[ $# -gt 0 ]]; do
 		case $1 in
-			(-n | --dry-run) dry_run=true 
-				shift ;;
-			(-h | --help) help=true 
-				shift ;;
+			(-n | --dry-run)
+				dry_run=1
+				shift
+				;;
+			(-h | --help)
+				help=1
+				shift
+				;;
 			(*) break ;;
 		esac
 	done
-	if [[ $help == true ]] || [[ $# -lt 1 ]]
-	then
-		printf 'Usage: command | pipe-while-read [-n|--dry-run] [-h|--help] <command> [args...]\n'
-		printf '  Reads stdin line by line and executes <command> with each line as argument\n'
-		printf '  -n, --dry-run  Show commands without executing\n'
-		printf '  -h, --help     Show this help\n'
-		printf 'Example: cat file.txt | pipe-while-read -n echo "Processing:"\n'
+
+	# Show help and exit if requested or if no command is provided.
+	if (( help )) || [[ $# -lt 1 ]]; then
+		_pipe-while-read_usage
 		return 0
 	fi
-	local cmd=$1 
+
+	local cmd="$1"
 	shift
-	while IFS= read -r line
-	do
-		if [[ $dry_run == true ]]
-		then
-			echo "[DRY RUN] $cmd $@ $line"
+
+	# Process stdin line by line.
+	while IFS= read -r line; do
+		if (( dry_run )); then
+			printf '[DRY RUN]: %s' "$cmd"
+			printf ' %q' "$@"
+			printf ' %q\n' "$line"
 		else
 			"$cmd" "$@" "$line"
 		fi

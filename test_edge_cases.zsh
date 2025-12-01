@@ -12,7 +12,7 @@ cat /dev/null | pipe-while-read echo "Line:"
 
 # --- Test 2: Input with spaces, tabs, and special characters ---
 echo "\n--- Test 2: Input with spaces, tabs, and special characters ---"
-echo -e "foo bar\nbaz\tqux\n!@#$%^&*()" | pipe-while-read echo "Special:"
+echo -e "foo bar\nbaz\tqux\n!@#\$%^&*()" | pipe-while-read echo "Special:"
 
 # --- Test 3: Very long lines ---
 echo "\n--- Test 3: Very long lines ---"
