@@ -41,7 +41,9 @@ pipe-while-read() {
 	# Process stdin line by line.
 	while IFS= read -r line; do
 		if (( dry_run )); then
-			printf '%s\n' "[DRY RUN] $cmd $@ $line"
+			printf '[DRY RUN]: %s' "$cmd"
+			printf ' %q' "$@"
+			printf ' %q\n' "$line"
 		else
 			"$cmd" "$@" "$line"
 		fi
