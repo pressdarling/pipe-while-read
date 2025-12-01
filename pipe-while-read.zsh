@@ -27,8 +27,8 @@ pipe-while-read () {
 		  # Basic execution: list files and print their names
 		  ls | pipe-while-read echo "Found file:"
 
-		  # Dry run: preview commands to move files without actually moving them
-		  echo -e "file1.txt\nfile2.txt" | pipe-while-read -n mv -t /path/to/dest
+		  # Dry run: preview commands to create files without actually creating them
+		  printf "file1.txt\nfile2.txt\n" | pipe-while-read -n touch
 
 		  # Chaining commands: find all .log files and gzip them
 		  find . -name "*.log" | pipe-while-read gzip
